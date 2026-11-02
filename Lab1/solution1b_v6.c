@@ -1,0 +1,217 @@
+/***********************************************************************************************************************
+ * Copyright [2015-2021] Renesas Electronics Corporation and/or its licensors. All Rights Reserved.
+ *
+ * This file is part of Renesas SynergyTM Software Package (SSP)
+ *
+ * The contents of this file (the "contents") are proprietary and confidential to Renesas Electronics Corporation
+ * and/or its licensors ("Renesas") and subject to statutory and contractual protections.
+ *
+ * This file is subject to a Renesas SSP license agreement. Unless otherwise agreed in an SSP license agreement with
+ * Renesas: 1) you may not use, copy, modify, distribute, display, or perform the contents; 2) you may not use any name
+ * or mark of Renesas for advertising or publicity purposes or in connection with your use of the contents; 3) RENESAS
+ * MAKES NO WARRANTY OR REPRESENTATIONS ABOUT THE SUITABILITY OF THE CONTENTS FOR ANY PURPOSE; THE CONTENTS ARE PROVIDED
+ * "AS IS" WITHOUT ANY EXPRESS OR IMPLIED WARRANTY, INCLUDING THE IMPLIED WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+ * PARTICULAR PURPOSE, AND NON-INFRINGEMENT; AND 4) RENESAS SHALL NOT BE LIABLE FOR ANY DIRECT, INDIRECT, SPECIAL, OR
+ * CONSEQUENTIAL DAMAGES, INCLUDING DAMAGES RESULTING FROM LOSS OF USE, DATA, OR PROJECTS, WHETHER IN AN ACTION OF
+ * CONTRACT OR TORT, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THE CONTENTS. Third-party contents
+ * included in this file may be subject to different terms.
+ **********************************************************************************************************************/
+/***********************************************************************************************************************
+* File Name    : hal_entry.c
+* Description  : This is a very simple example application that blinks all LEDs on a board.
+***********************************************************************************************************************/
+
+/*CENTRAL CANDIDATE AND EFFICIENT ABS*/
+/*For i=0 x-axis and y-axis candidate is the same. 
+  "c_loop" is a simpler version of i_loop using same result for x and y axis
+   One single sub (p1-p2) for evaluating abs(p1-p2)*/
+
+#include "hal_data.h"
+#include "stdio.h"
+#include "string.h"
+#include "images.h"
+
+
+#define N 10    /*Frame dimension for QCIF format*/
+#define M 10     /*Frame dimension for QCIF format*/
+
+#define B 5      /*Block size*/
+
+#define p 7       /*Search space. Restricted in a [-p,p] region around the
+                    original location of the block.*/
+
+
+#define s_loop(s)                                                               \
+    min1 = 255*B*B;                                                             \
+    min2 = 255*B*B;                                                             \
+    i_loop(-s);                                                                 \
+    c_loop;                                                                     \
+    i_loop(s);                                                                  \
+    vx += bestx;                                                                \
+    vy += besty;
+
+
+/*Central candidate is common between x and y axis*/
+#define c_loop                                                                  \
+    distc = 0;                                                                  \
+    for(k=0; k<B; k++)                                                          \
+    {                                                                           \
+        for(l=0; l<B; l++)                                                      \
+        {                                                                       \
+            p1 = current[bx+k][by+l];                                           \
+            if((bx + vx + k) < 0 ||                                             \
+                (bx + vx + k) > (N-1) ||                                        \
+                (by + vy + l) < 0 ||                                            \
+                (by + vy + l) > (M-1))                                          \
+            {                                                                   \
+                p2 = 0;                                                         \
+            } else {                                                            \
+                p2 = previous[bx+vx+k][by+vy+l];                                \
+            }                                                                   \
+            d = p1-p2;                                                          \
+            distc += (d<0) ? -d : d;                                            \
+        }                                                                       \
+    }                                                                           \
+    if(distc < min1)                                                            \
+    {                                                                           \
+        min1 = distc;                                                           \
+        bestx = 0;                                                              \
+    }                                                                           \
+    if(distc < min2)                                                            \
+    {                                                                           \
+        min2 = distc;                                                           \
+        besty = 0;                                                              \
+    }
+
+
+/*Side candidates (i=-s, i=+s). X and Y search merged in one loop*/
+#define i_loop(i)                                                               \
+    distx = 0;                                                                  \
+    disty = 0;                                                                  \
+    for(k=0; k<B; k++)                                                          \
+    {                                                                           \
+        for(l=0; l<B; l++)                                                      \
+        {                                                                       \
+            p1 = current[bx+k][by+l];                                           \
+            if((bx + vx + i + k) < 0 ||                                         \
+                (bx + vx + i + k) > (N-1) ||                                    \
+                (by + vy + l) < 0 ||                                            \
+                (by + vy + l) > (M-1))                                          \
+            {                                                                   \
+                p2 = 0;                                                         \
+            } else {                                                            \
+                p2 = previous[bx+vx+i+k][by+vy+l];                              \
+            }                                                                   \
+            if((bx + vx + k) <0 ||                                              \
+                (bx + vx + k) > (N-1) ||                                        \
+                (by + vy + i + l) < 0 ||                                        \
+                (by + vy + i + l) > (M-1))                                      \
+            {                                                                   \
+                q2 = 0;                                                         \
+            } else {                                                            \
+                q2 = previous[bx+vx+k][by+vy+i+l];                              \
+            }                                                                   \
+            d = p1-p2;                                                          \
+            distx += (d<0) ? -d : d;                                            \
+            d = p1-q2;                                                          \
+            disty += (d<0) ? -d : d;                                            \
+        }                                                                       \
+    }                                                                           \
+    if(distx < min1)                                                            \
+    {                                                                           \
+        min1 = distx;                                                           \
+        bestx = i;                                                              \
+    }                                                                           \
+    if(disty < min2)                                                            \
+    {                                                                           \
+        min2 = disty;                                                           \
+        besty = i;                                                              \
+    }
+
+
+void phods_motion_estimation(const int current[N][M], const int previous[N][M],
+        int vectors_x[N/B][M/B],int vectors_y[N/B][M/B])
+{
+  int x, y, i, j, k, l, p1, p2, q2, distx, disty, S, min1, min2, bestx, besty;
+  int vx, vy;   /*copies of vectors_x[x][y], vectors_y[x][y]*/
+  int bx, by;   /*top-left pixel of the current block (B*x, B*y)*/
+  int distc;    /*central candidate*/
+  int d;        /*pixel difference*/
+
+  distx = 0;
+  disty = 0;
+
+  /*For all blocks in the current frame*/
+  for(x=0; x<N/B; x++)
+  {
+    for(y=0; y<M/B; y++)
+    {
+      bx = B*x;
+      by = B*y;
+
+      vx = 0;
+      vy = 0;
+
+      s_loop(4);
+      s_loop(2);
+      s_loop(1);
+
+      vectors_x[x][y] = vx;
+      vectors_y[x][y] = vy;
+    }
+  }
+
+}
+
+/*******************************************************************************************************************//**
+ * @brief  Blinky example application
+ *
+ * Blinks all leds at a rate of 1 second using the software delay function provided by the BSP.
+ * Only references two other modules including the BSP, IOPORT.
+ *
+ **********************************************************************************************************************/
+void hal_entry(void) {
+
+
+	// Code to initialize the DWT->CYCCNT register
+    CoreDebug->DEMCR |= 0x01000000;
+       ITM->LAR = 0xC5ACCE55;
+       DWT->CYCCNT = 0;
+       DWT->CTRL |= 1;
+	   /* Initialize your variables here */
+     uint32_t cycles_i, cycles_in, cycles_out, min_cycles, max_cycles;
+     uint32_t cycles[10];
+     uint64_t total_cycles = 0;
+     double min_time, max_time, avg_time;
+     min_cycles = 0xFFFFFFFF;
+     max_cycles = 0;
+
+
+       int motion_vectors_x[N/B][M/B],
+           motion_vectors_y[N/B][M/B], i, j;
+
+      for(int idx=0; idx<10; idx++){
+		 /* Add timer code here */
+
+         cycles_in = DWT->CYCCNT;
+         phods_motion_estimation(current,previous,motion_vectors_x,motion_vectors_y);
+         cycles_out = DWT->CYCCNT;
+         cycles_i = cycles_out - cycles_in;
+         cycles[idx] = cycles_i;
+         if (cycles_i < min_cycles) min_cycles = cycles_i;
+         if (cycles_i > max_cycles) max_cycles = cycles_i;
+         total_cycles += cycles_i;
+
+      }
+
+      max_time = ((double)max_cycles / SystemCoreClock) * 1000;
+      min_time = ((double)min_cycles / SystemCoreClock) * 1000;
+      avg_time = (((double)total_cycles / 10) / SystemCoreClock) * 1000;
+
+      while(1){
+
+      }
+
+
+
+}
