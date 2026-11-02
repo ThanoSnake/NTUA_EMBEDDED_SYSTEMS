@@ -148,9 +148,9 @@ void phods_motion_estimation(const int current[N][M], const int previous[N][M],
       vy = 0;
 
       /*Copy the current block*/
-      for(k=0; k<Bx; k++)
+      for(k=Bx-1; k>=0; k--)
       {
-        for(l=0; l<By; l++)
+        for(l=By-1; l>=0; l--)
         {
           cb[k][l] = current[bx+k][by+l];
         }
